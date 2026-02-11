@@ -14,3 +14,17 @@ datasets/
 wandb/
 mlruns/
 dvc.lock
+data/processed/
+models/*.pkl
+models/*.joblib
+*.pkl
+*.joblib
+*.csv
+data/
+models/
+*.csv
+*.parquet
+*.pkl
+*.joblib
+mlruns/
+wandb/
