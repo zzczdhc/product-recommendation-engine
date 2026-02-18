@@ -18,15 +18,15 @@ class AssociationRuleModel:
     """Association rule mining for product recommendations"""
 
     def __init__(self,
-                 min_support: float = 0.01,
+                 min_support: float = 0.003,
                  min_confidence: float = 0.1,
-                 min_lift: float = 2.0,
+                 min_lift: float = 1.5,
                  max_len: int = 2):
         """
         Initialize association rule model
 
         Args:
-            min_support: Minimum support threshold (0.01 = 1%)
+            min_support: Minimum support threshold
             min_confidence: Minimum confidence threshold
             min_lift: Minimum lift threshold
             max_len: Maximum itemset length
@@ -41,7 +41,7 @@ class AssociationRuleModel:
 
     def fit(self,
             prior: pd.DataFrame,
-            top_k_products: Optional[int] = 1000) -> "AssociationRuleModel":
+            top_k_products: Optional[int] = 2000) -> "AssociationRuleModel":
         """
         Fit association rule model
 
@@ -182,13 +182,19 @@ class AssociationRuleModel:
 
     def get_basket_recommendations(self,
                                    product_ids: List[int],
-                                   top_n: int = 5) -> List[Tuple[int, float]]:
+                                   top_n: int = 5,
+                                   require_full_match: bool = False,
+                                   min_overlap: int = 1,
+                                   overlap_weighted: bool = True) -> List[Tuple[int, float]]:
         """
         Get recommendations for a basket of products
 
         Args:
             product_ids: List of product IDs in basket
             top_n: Number of recommendations
+            require_full_match: If True, antecedent must be a subset of basket
+            min_overlap: Minimum overlap size between basket and antecedent
+            overlap_weighted: If True, down-weight partial matches by overlap ratio
 
         Returns:
             List of (product_id, lift) tuples
@@ -197,29 +203,38 @@ class AssociationRuleModel:
             return []
 
         product_strs = set(str(p) for p in product_ids)
+        min_overlap = max(1, int(min_overlap))
 
-        def matches_basket(antecedents):
+        def overlap_size(antecedents) -> int:
             ante_strs = set(str(i) for i in antecedents)
-            return ante_strs.issubset(product_strs)
+            overlap = len(ante_strs & product_strs)
+            if require_full_match:
+                return overlap if ante_strs.issubset(product_strs) else 0
+            return overlap if overlap >= min_overlap else 0
 
-        mask = self.rules['antecedents'].apply(matches_basket)
-        matched_rules = self.rules[mask]
+        overlap_series = self.rules['antecedents'].apply(overlap_size)
+        matched_rules = self.rules[overlap_series > 0].copy()
+        if len(matched_rules) > 0:
+            matched_rules['overlap'] = overlap_series[overlap_series > 0].astype(float).values
 
         if len(matched_rules) == 0:
             return []
 
-        # Aggregate recommendations: keep max lift for each consequent
+        # Aggregate recommendations: keep max score for each consequent
         recommendations = {}
         for _, row in matched_rules.iterrows():
             consequents = [int(x) for x in row['consequents']]
-            lift = row['lift']
+            lift = float(row['lift'])
+            overlap = float(row.get('overlap', 1.0))
+            ante_len = max(1.0, float(row.get('ante_len', len(row['antecedents']))))
+            score = lift * (overlap / ante_len) if overlap_weighted else lift
 
             for cons_product in consequents:
                 if cons_product not in product_ids:
                     if cons_product in recommendations:
-                        recommendations[cons_product] = max(recommendations[cons_product], lift)
+                        recommendations[cons_product] = max(recommendations[cons_product], score)
                     else:
-                        recommendations[cons_product] = lift
+                        recommendations[cons_product] = score
 
         # Sort and return top N
         recommendations = sorted(recommendations.items(), key=lambda x: x[1], reverse=True)[:top_n]
